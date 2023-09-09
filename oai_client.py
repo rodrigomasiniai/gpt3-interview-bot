@@ -1,4 +1,5 @@
-"""OpenAI Client Wrapper.
+"""
+OpenAI Client Wrapper.
 
 This class wraps the OpenAI API and provides a few convenience methods.
 
@@ -10,25 +11,16 @@ Caching is useful for speeding up development and saving money :)
 - Rate limiting
 - Response postprocessing
 """
-import argparse
-import logging
-import pprint
-import re
-import time
 from typing import Dict, List, Union
 
 import diskcache
 import openai
 from tenacity import (
-    before_sleep_log,
     retry,
     retry_if_exception_type,
     stop_after_attempt,
     wait_random_exponential,
 )
-
-logger = logging.getLogger(__name__)
-logger.setLevel(logging.INFO)
 
 INSERT_API_TOKEN = "[insert]"
 
@@ -65,7 +57,6 @@ class OAIClient:
 
         Args:
             params (dict): Keyword arguments to pass to `openai.Completion.create()`.
-            request_key (str): Key to use for cache lookup and logging.
 
         Returns:
             str. Cache key.
@@ -76,7 +67,6 @@ class OAIClient:
 
     def _completion_api_call(self, params: dict) -> Dict:
         """Wrapper so we can time the API call w/o cache."""
-        logging.debug(f"Calling API with params: {params}")
         start = time.time()
         response: Dict = openai.Completion.create(**params)  # type:ignore
         response["latency"] = round(time.time() - start, 3)
@@ -89,26 +79,19 @@ class OAIClient:
 
         Args:
             params (dict): See `openai.Completion` documentation.
-            request_tag (Union[str, None], optional): Tag for easier request debugging/logging.
+            request_tag (Union[str, None], optional): Tag for easier request debugging.
 
         Returns:
             Dict: OAI Completion API response.
         """
         cache_key = self._get_cache_key(params)
 
-        logging.debug(f"[OAI:{request_tag}] Prompt:\n{params['prompt']}")
-
         if self._disk_cache is not None:
             cached_response: Dict = self._disk_cache.get(cache_key)  # type: ignore
             if cached_response is not None:
-                logging.info(
-                    f"[OAI:{request_tag}] Cache hit!. Entries {len(self._disk_cache)}"
-                )
                 return cached_response
 
         response = self._completion_api_call(params)
-
-        logging.debug(f"[OAI:{request_tag}] Latency: {response['latency']}.")
 
         if self._disk_cache is not None:
             self._disk_cache.set(cache_key, response, tag=request_tag)
@@ -127,7 +110,6 @@ class OAIClient:
                 openai.error.TryAgain,
             )
         ),
-        before_sleep=before_sleep_log(logger, log_level=logging.INFO),
     )
     def complete(
         self,
@@ -154,7 +136,7 @@ class OAIClient:
 
         Args:
             prompt (str): Prompt to complete.
-            request_tag (str): Request Tag to use for cache lookup and logging.
+            request_tag (str): Request Tag to use for cache lookup.
             suffix (str): Appended to prompt for INSERT requests. Example:
                 complete(
                     model="text-davinci-002",
@@ -164,8 +146,6 @@ class OAIClient:
         Returns:
             Dict. Response from OpenAI Completion API.
         """
-        logging.debug(f"[OAI] Prompt:\n{prompt}")
-
         suffix = None
         if mode == "insert":
             if prompt.lower().count(INSERT_API_TOKEN) != 1:
@@ -190,50 +170,10 @@ class OAIClient:
             suffix=suffix,
         )
 
-        logging.debug(f"[OAI:{request_tag}] Params: {params}")
-
         response = self._complete_with_cache(params, request_tag)
-
-        logging.debug(f"[OAI] Response:\n{response}")
 
         result = postprocess_completion_response(response)
         result["request_params"] = params
         result["request_tag"] = request_tag
 
-        logging.debug(f"[OAI] Post-processed:\n{result}")
-
         return result
-
-
-if __name__ == "__main__":
-    """Example Usage of OAIClient.
-
-    Usage:
-        python oai_client.py --prompt "Hello, how are you?" --model "text-davinci-002"
-    """
-    logging.basicConfig(level=logging.DEBUG)
-
-    parser = argparse.ArgumentParser()
-    parser.add_argument("--prompt", required=True)
-    parser.add_argument("--model", default="text-davinci-002")
-    parser.add_argument("--max-tokens", type=int, default=100)
-    parser.add_argument("--cache-dir")
-    args = parser.parse_args()
-
-    from settings import Settings
-
-    cfg = Settings.from_env_file()
-
-    cache = None
-    if args.cache_dir is not None:
-        cache = diskcache.Cache(args.cache_dir)
-
-    oai_client = OAIClient(
-        api_key=cfg.openai_api_key,
-        organization_id=cfg.openai_org_id,
-        cache=cache,
-    )
-
-    result = oai_client.complete(prompt=args.prompt, request_tag="test")
-
-    pprint.pp(result)
